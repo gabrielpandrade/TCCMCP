@@ -1,0 +1,21 @@
+[ ] Descoberta de hosts ativos (ping sweep)
+
+[ ] Descoberta de portas abertas (TCP SYN scan)
+
+[ ] Testar um host em várias portas (tipo nmap -sS) e retornar quais estão abertas/fechadas.
+
+[ ] Traceroute
+
+[ ] Resolução ARP na rede local
+
+[ ] Consulta WHOIS/MAC Vendor via OUI
+
+[ ] Construção e envio de pacotes customizados
+
+[ ] Detecção simples de SO (OS fingerprinting)
+
+[ ] Geração de tráfego de teste
+
+[ ] DNS lookup manual
+
+[ ] Teste de MTU (Path MTU Discovery)

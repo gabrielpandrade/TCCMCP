@@ -3,7 +3,7 @@ import ipaddress
 import whois
 from concurrent.futures import ThreadPoolExecutor
 
-from scapy.all import *
+from scapy.all import sr1, socket, send, srp
 from scapy.layers.inet import IP, ICMP, TCP
 from scapy.layers.l2 import ARP, Ether
 import scapy.config
@@ -376,209 +376,6 @@ async def arp_scan(network: str) -> str:
         
     except Exception as e:
         return f"Erro ao executar ARP scan: {str(e)}"
-
-async def os_fingerprint(self, args: Dict[str, Any]) -> str:
-    """Implementação do OS fingerprinting simples"""
-    try:
-        target = args.get("target")
-        
-        # Resolver hostname para IP se necessário
-        try:
-            target_ip = socket.gethostbyname(target)
-        except socket.gaierror:
-            return f"Erro: Não foi possível resolver o hostname '{target}'"
-        
-        def fingerprint_os():
-            """Função para fazer OS fingerprinting"""
-            try:
-                fingerprint_data = {
-                    'ttl_values': [],
-                    'window_sizes': [],
-                    'tcp_options': [],
-                    'icmp_responses': [],
-                    'tcp_flags': []
-                }
-                
-                # Teste 1: ICMP Echo Request para obter TTL
-                icmp_packet = IP(dst=target_ip)/ICMP()
-                icmp_response = sr1(icmp_packet, timeout=2, verbose=0)
-                
-                if icmp_response and icmp_response.haslayer(IP):
-                    ttl = icmp_response[IP].ttl
-                    fingerprint_data['ttl_values'].append(('ICMP', ttl))
-                
-                # Teste 2: TCP SYN para portas comuns para obter características TCP
-                common_ports = [80, 443, 22, 21, 25, 53]
-                
-                for port in common_ports:
-                    try:
-                        # TCP SYN com opções específicas
-                        tcp_packet = IP(dst=target_ip)/TCP(
-                            dport=port, 
-                            flags="S",
-                            options=[('MSS', 1460), ('WScale', 7), ('Timestamp', (0, 0)), ('NOP', None), ('NOP', None)]
-                        )
-                        
-                        tcp_response = sr1(tcp_packet, timeout=1, verbose=0)
-                        
-                        if tcp_response and tcp_response.haslayer(TCP):
-                            tcp_layer = tcp_response[TCP]
-                            
-                            # Coletar TTL
-                            if tcp_response.haslayer(IP):
-                                ttl = tcp_response[IP].ttl
-                                fingerprint_data['ttl_values'].append(('TCP', ttl))
-                            
-                            # Coletar window size
-                            window = tcp_layer.window
-                            fingerprint_data['window_sizes'].append(window)
-                            
-                            # Coletar TCP options
-                            if hasattr(tcp_layer, 'options') and tcp_layer.options:
-                                fingerprint_data['tcp_options'].extend(tcp_layer.options)
-                            
-                            # Coletar flags
-                            fingerprint_data['tcp_flags'].append(tcp_layer.flags)
-                            
-                            # Se encontrou uma porta aberta, não precisa testar todas
-                            if tcp_layer.flags == 18:  # SYN-ACK
-                                # Enviar RST para fechar
-                                rst_packet = IP(dst=target_ip)/TCP(dport=port, flags="R")
-                                send(rst_packet, verbose=0)
-                                break
-                                
-                    except Exception as e:
-                        continue
-                
-                # Teste 3: TCP com flags inválidas
-                try:
-                    # TCP FIN scan (pode revelar comportamentos específicos do OS)
-                    fin_packet = IP(dst=target_ip)/TCP(dport=80, flags="F")
-                    fin_response = sr1(fin_packet, timeout=1, verbose=0)
-                    
-                    if fin_response:
-                        fingerprint_data['tcp_flags'].append(('FIN_response', fin_response[TCP].flags if fin_response.haslayer(TCP) else 'ICMP'))
-                except:
-                    pass
-                
-                return fingerprint_data
-                
-            except Exception as e:
-                return None
-        
-        def analyze_fingerprint(data):
-            """Analisar dados coletados e tentar identificar o OS"""
-            if not data:
-                return "Não foi possível coletar dados suficientes para fingerprinting"
-            
-            os_hints = []
-            confidence = 0
-            
-            # Análise de TTL
-            ttl_values = [ttl for _, ttl in data['ttl_values']]
-            if ttl_values:
-                avg_ttl = sum(ttl_values) / len(ttl_values)
-                
-                if 60 <= avg_ttl <= 64:
-                    os_hints.append("Linux/Unix (TTL ~64)")
-                    confidence += 30
-                elif 120 <= avg_ttl <= 128:
-                    os_hints.append("Windows (TTL ~128)")
-                    confidence += 30
-                elif 250 <= avg_ttl <= 255:
-                    os_hints.append("Cisco/Network Device (TTL ~255)")
-                    confidence += 25
-                elif 30 <= avg_ttl <= 32:
-                    os_hints.append("Older Unix/Linux (TTL ~32)")
-                    confidence += 20
-            
-            # Análise de Window Size
-            if data['window_sizes']:
-                unique_windows = set(data['window_sizes'])
-                
-                if 65535 in unique_windows:
-                    os_hints.append("Possível Windows (Window Size 65535)")
-                    confidence += 15
-                elif any(w in [5840, 5792, 14600] for w in unique_windows):
-                    os_hints.append("Possível Linux (Window Sizes típicos)")
-                    confidence += 15
-            
-            # Análise de TCP Options
-            if data['tcp_options']:
-                option_types = [opt[0] if isinstance(opt, tuple) else opt for opt in data['tcp_options']]
-                
-                if 'Timestamp' in option_types:
-                    os_hints.append("Suporte a TCP Timestamps (comum em sistemas modernos)")
-                    confidence += 10
-                
-                if 'WScale' in option_types:
-                    os_hints.append("Suporte a Window Scaling (sistemas modernos)")
-                    confidence += 10
-            
-            return os_hints, confidence
-        
-        # Executar fingerprinting
-        loop = asyncio.get_event_loop()
-        
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            future = loop.run_in_executor(executor, fingerprint_os)
-            fingerprint_data = await future
-        
-        # Analisar resultados
-        os_hints, confidence = analyze_fingerprint(fingerprint_data)
-        
-        # Formatar resultado
-        result_text = f"=== OS FINGERPRINTING RESULTS ===\n"
-        result_text += f"Alvo: {target} ({target_ip})\n"
-        result_text += f"Confiança: {confidence}%\n\n"
-        
-        if fingerprint_data:
-            # Dados coletados
-            result_text += "DADOS COLETADOS:\n"
-            result_text += "-" * 40 + "\n"
-            
-            if fingerprint_data['ttl_values']:
-                ttl_str = ", ".join([f"{proto}:{ttl}" for proto, ttl in fingerprint_data['ttl_values']])
-                result_text += f"TTL Values: {ttl_str}\n"
-            
-            if fingerprint_data['window_sizes']:
-                windows = list(set(fingerprint_data['window_sizes']))
-                result_text += f"TCP Window Sizes: {', '.join(map(str, windows))}\n"
-            
-            if fingerprint_data['tcp_options']:
-                options = list(set([opt[0] if isinstance(opt, tuple) else str(opt) for opt in fingerprint_data['tcp_options']]))
-                result_text += f"TCP Options: {', '.join(options)}\n"
-            
-            result_text += "\n"
-        
-        # Análise e sugestões
-        if os_hints:
-            result_text += "ANÁLISE DO SISTEMA OPERACIONAL:\n"
-            result_text += "-" * 40 + "\n"
-            for hint in os_hints:
-                result_text += f"• {hint}\n"
-            
-            result_text += "\n"
-            
-            if confidence >= 50:
-                result_text += "🎯 ALTA CONFIANÇA - Identificação provável\n"
-            elif confidence >= 30:
-                result_text += "⚠️  MÉDIA CONFIANÇA - Identificação possível\n"
-            else:
-                result_text += "❓ BAIXA CONFIANÇA - Dados insuficientes\n"
-        else:
-            result_text += "❌ Não foi possível identificar o sistema operacional\n"
-            result_text += "Possíveis causas:\n"
-            result_text += "• Host não responde a pacotes de teste\n"
-            result_text += "• Firewall bloqueando pacotes\n"
-            result_text += "• Sistema com configurações não padrão\n"
-        
-        result_text += "\n" + "=" * 50
-        
-        return result_text
-        
-    except Exception as e:
-        return f"Erro ao executar OS fingerprinting: {str(e)}"
     
 @mcp.tool(name="whois_lookup", description="Realiza uma consulta WHOIS em um alvo e retorna informações relevantes")
 async def whois_lookup(target: str) -> str:
@@ -645,9 +442,7 @@ async def whois_lookup(target: str) -> str:
         result_text += "\n" + "=" * 50
 
         return result_text
-
-    except whois.parser.WhoisCommandFailed as e:
-        return f"Erro ao executar whois: {e}"
+    
     except Exception as e:
         return f"Ocorreu um erro inesperado: {e}"
     

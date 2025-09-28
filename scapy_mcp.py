@@ -1,6 +1,7 @@
 import asyncio
 import ipaddress
 import whois
+from ipwhois import IPWhois
 from concurrent.futures import ThreadPoolExecutor
 
 from scapy.all import sr1, socket, send, srp
@@ -13,7 +14,7 @@ from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP("scapy-mcp")
 
-@mcp.tool(name="ping_sweep", description="Descoberta de hosts ativos em uma faixa de IPs usando ICMP ping")
+@mcp.tool(name="ping_sweep", description="Descoberta de hosts ativos em uma faixa de IPs usando ping")
 async def ping_sweep(network: str, timeout: int = 1) -> str:
 
     try:
@@ -377,67 +378,33 @@ async def arp_scan(network: str) -> str:
     except Exception as e:
         return f"Erro ao executar ARP scan: {str(e)}"
     
-@mcp.tool(name="whois_lookup", description="Realiza uma consulta WHOIS em um alvo e retorna informações relevantes")
+@mcp.tool(name="whois_lookup", description="Realiza uma consulta WHOIS em um alvo e retorna informações relevantes, como o endereço IP de um domínio")
 async def whois_lookup(target: str) -> str:
-    """
-    Realiza uma consulta WHOIS em um alvo (domínio ou IP) e extrai informações relevantes.
-
-    Args:
-        target (str): O domínio ou endereço IP para o qual a consulta WHOIS será realizada.
-
-    Returns:
-        str: Uma string formatada com as informações WHOIS mais relevantes.
-    """
     try:
         # Realiza a consulta WHOIS
         w = whois.whois(target)
 
-        # Informações a serem extraídas
-        relevant_info = {
-            "Domain Name": w.domain_name,
-            "Registrar": w.registrar,
-            "Creation Date": w.creation_date,
-            "Updated Date": w.updated_date,
-            "Expiration Date": w.expiration_date,
-            "Name Server": w.name_servers,
-            "Organization": w.org,
-            "Registrant Name": w.registrant_name,
-            "Registrant Organization": w.registrant_organization,
-            "Registrant Street": w.registrant_street,
-            "Registrant City": w.registrant_city,
-            "Registrant State/Province": w.registrant_state_province,
-            "Registrant Postal Code": w.registrant_postal_code,
-            "Registrant Country": w.registrant_country,
-            "Registrant Phone": w.registrant_phone,
-            "Registrant Email": w.registrant_email,
-            "Admin Name": w.admin_name,
-            "Admin Organization": w.admin_organization,
-            "Admin Phone": w.admin_phone,
-            "Admin Email": w.admin_email,
-            "Tech Name": w.tech_name,
-            "Tech Organization": w.tech_organization,
-            "Tech Phone": w.tech_phone,
-            "Tech Email": w.tech_email,
-        }
-
-        # Formata a saída
+        # Formata a saída com todas as informações disponíveis
         result_text = f"=== WHOIS LOOKUP RESULTS FOR {target.upper()} ===\n"
         result_text += "-" * 50 + "\n"
 
+        # Itera sobre os atributos do objeto whois e os adiciona ao resultado
+        # Filtra atributos que são métodos ou internos
+        all_info = {attr: getattr(w, attr) for attr in dir(w) if not callable(getattr(w, attr)) and not attr.startswith('__')}
+
         found_info = False
-        for key, value in relevant_info.items():
+        for key, value in all_info.items():
             if value:
                 found_info = True
                 if isinstance(value, list):
-                    result_text += f"{key}:\n"
+                    result_text += f"{key.replace('_', ' ').title()}:\n"
                     for item in value:
                         result_text += f"  - {item}\n"
                 else:
-                    result_text += f"{key}: {value}\n"
+                    result_text += f"{key.replace('_', ' ').title()}: {value}\n"
 
         if not found_info:
-            result_text += "Nenhuma informação relevante encontrada.\n"
-            result_text += f"WHOIS completo (se disponível):\n{w}"
+            result_text += "Nenhuma informação encontrada para este alvo.\n"
 
         result_text += "\n" + "=" * 50
 
@@ -445,6 +412,39 @@ async def whois_lookup(target: str) -> str:
     
     except Exception as e:
         return f"Ocorreu um erro inesperado: {e}"
+    
+
+@mcp.tool(name="rdap_lookup", description="Realiza uma consulta RDAP em um alvo (endereço IP) e retorna informações relevantes")
+async def rdap_lookup(target: str) -> str:
+    try:
+        # Realiza a consulta WHOIS
+        w = IPWhois(target).lookup_rdap()
+
+        # Formata a saída com todas as informações disponíveis
+        result_text = f"=== WHOIS LOOKUP RESULTS FOR {target.upper()} ===\n"
+        result_text += "-" * 50 + "\n"
+
+        found_info = False
+        for key, value in w.items():
+            if value:
+                found_info = True
+                if isinstance(value, list):
+                    result_text += f"{key.replace('_', ' ').title()}:\n"
+                    for item in value:
+                        result_text += f"  - {item}\n"
+                else:
+                    result_text += f"{key.replace('_', ' ').title()}: {value}\n"
+
+        if not found_info:
+            result_text += "Nenhuma informação encontrada para este alvo.\n"
+
+        result_text += "\n" + "=" * 50
+
+        return result_text
+    
+    except Exception as e:
+        return f"Ocorreu um erro inesperado: {e}"
+
     
 
 if __name__ == "__main__":
